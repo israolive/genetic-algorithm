@@ -1,9 +1,9 @@
-#include "MainWindow.hpp"
+#include "view/MainWindow.hpp"
 
 #include <QApplication>
 #include <iostream>
 
-#include "lib/genetic_algorithm.hpp"
+#include "model/genetic_algorithm.hpp"
 
 int main(int argc, char *argv[])
 {

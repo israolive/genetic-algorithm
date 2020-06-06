@@ -17,14 +17,14 @@ DEFINES += QT_DEPRECATED_WARNINGS
 
 SOURCES += \
     main.cpp \
-    MainWindow.cpp
+    view/MainWindow.cpp
 
 HEADERS += \
-    MainWindow.hpp \
-    lib/genetic_algorithm.hpp
+    view/MainWindow.hpp \
+    model/genetic_algorithm.hpp
 
 FORMS += \
-    MainWindow.ui
+    model/MainWindow.ui
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
