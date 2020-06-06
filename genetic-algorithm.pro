@@ -24,7 +24,7 @@ HEADERS += \
     model/genetic_algorithm.hpp
 
 FORMS += \
-    model/MainWindow.ui
+    view/MainWindow.ui
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
