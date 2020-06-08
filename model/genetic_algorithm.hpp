@@ -62,8 +62,8 @@ namespace ai::gal {
         auto operate(Population<ChromoType> const& pop) const -> Population<ChromoType> override {
             std::vector<std::size_t> idxes (m_count);
 
-            std::transform(std::begin(idxes), std::end(idxes), std::begin(idxes),
-                           [&idxes, &pop, chance = m_best_chance, last = std::begin(idxes)] ([[maybe_unused]] auto holder) mutable {
+            std::generate(std::begin(idxes), std::end(idxes),
+                          [&idxes, &pop, chance = m_best_chance, last = std::begin(idxes)] () mutable {
                                std::size_t sel;
 
                                do {
