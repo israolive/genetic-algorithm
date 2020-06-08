@@ -20,6 +20,7 @@ SOURCES += \
     view/MainWindow.cpp
 
 HEADERS += \
+    model/stochastic.hpp \
     view/MainWindow.hpp \
     model/genetic_algorithm.hpp
 
