@@ -2,10 +2,15 @@
 #define GENETICALGORITHM_HPP
 
 #include <algorithm>
+#include <numeric>
 #include <functional>
 #include <vector>
 
 namespace ai::gal {
+
+    template <typename Allele>
+    using Chromosome = std::vector<Allele>;
+
     template <typename ChromoType>
     struct Organism {
         ChromoType c;
@@ -20,8 +25,18 @@ namespace ai::gal {
     }
 
     template <typename ChromoType>
+    using Genetic_Operator_Function = std::function<auto (Population<ChromoType> const&) -> Population<ChromoType>>;
+
+    template <typename ChromoType>
     struct Genetic_Operator {
+
         virtual auto operate(Population<ChromoType> const& pop) const -> Population<ChromoType> = 0;
+
+        virtual auto fun() -> Genetic_Operator_Function<ChromoType> {
+            return [this](Population<ChromoType> const& pop) {
+                return this->operate(pop);
+            };
+        }
     };
 
     template <typename ChromoType>
@@ -30,9 +45,12 @@ namespace ai::gal {
     }
 
     template <typename ChromoType>
-    auto operator+(Population<ChromoType> & pool, Population<ChromoType> const& pop) -> Population<ChromoType>& {
-        pool.reserve(pool.size() + pop.size());
-        pool.insert(std::end(pool), std::begin(pop), std::end(pop));
+    auto operator+(Population<ChromoType> const& l, Population<ChromoType> const& r) -> Population<ChromoType> {
+        Population<ChromoType> pool;
+        pool.reserve(std::size(l) + std::size(r));
+
+        std::copy(std::begin(l), std::end(l), std::back_inserter(pool));
+        std::copy(std::begin(r), std::end(r), std::back_inserter(pool));
 
         return pool;
     }
@@ -84,6 +102,28 @@ namespace ai::gal {
                            });
 
             return pool;
+        }
+    };
+
+    template <typename ChromoType>
+    auto make_tournament_selector(std::size_t count, double best_chance) -> Genetic_Operator<ChromoType> {
+        Tournament_Selector<ChromoType> selector(count, best_chance);
+        return selector;
+    }
+
+    template <typename ChromoType>
+    struct Best_Selector : public Genetic_Operator<ChromoType> {
+        std::size_t m_count;
+
+        Best_Selector(std::size_t count)
+            : m_count(count) {}
+
+        auto operate(Population<ChromoType> const& pop) const -> Population<ChromoType> override {
+            return {
+                *std::max_element(std::begin(pop), std::end(pop), [](auto const& l, auto const& r) {
+                    return l.fitness < r.fitness;
+                })
+            };
         }
     };
 
@@ -145,8 +185,34 @@ namespace ai::gal {
         }
     };
 
-    template <typename Allele>
-    using Chromosome = std::vector<Allele>;
+    template <typename ChromoType>
+    struct Fitness_Applier : public Genetic_Operator<ChromoType> {
+        using Fitness_Fn = std::function<auto (ChromoType const&) -> double>;
+
+        Fitness_Fn m_measurement;
+
+        Fitness_Applier(Fitness_Fn measurement)
+            : m_measurement(measurement) {}
+
+        auto operator()(Fitness_Fn measurement) -> Fitness_Applier {
+            Fitness_Applier applier = *this;
+            applier.m_measurement = measurement;
+
+            return applier;
+        }
+
+        auto operate(Population<ChromoType> const& pop) const -> Population<ChromoType> override {
+            Population<ChromoType> pool;
+            pool.reserve(std::size(pop));
+
+            std::transform(std::begin(pop), std::end(pop), std::back_inserter(pool),
+                           [measurer = m_measurement](auto const& organism) -> Organism<ChromoType> {
+                               return { organism.c, measurer(organism.c) };
+                           });
+
+            return pool;
+        }
+    };
 
     template <typename ChromoType>
     auto order_crossover(ChromoType const& l, ChromoType const& r) -> std::pair<ChromoType, ChromoType> {
@@ -192,6 +258,84 @@ namespace ai::gal {
         std::swap(mutated.at(rnd1), mutated.at(rnd2));
 
         return mutated;
+    }
+
+    template <typename ChromoType, typename GenOpFn, std::size_t Phase1Count, std::size_t Phase2Count, std::size_t Phase3Count>
+    struct Genetic_Context {
+        Population<ChromoType> m_current_population;
+
+        std::array<GenOpFn, Phase1Count> m_phase1_ops;
+        std::array<GenOpFn, Phase2Count> m_phase2_ops;
+        std::array<GenOpFn, Phase3Count> m_phase3_ops;
+
+        Genetic_Context(Population<ChromoType> initial_pop,
+                        std::array<GenOpFn, Phase1Count> phase1_ops,
+                        std::array<GenOpFn, Phase2Count> phase2_ops,
+                        std::array<GenOpFn, Phase3Count> phase3_ops)
+            : m_current_population(initial_pop),
+              m_phase1_ops(phase1_ops), m_phase2_ops(phase2_ops), m_phase3_ops(phase3_ops)
+        {}
+
+        auto evolve_once() -> Genetic_Context& {
+            Population<ChromoType> phase1_population =
+                std::accumulate(std::begin(m_phase1_ops), std::end(m_phase1_ops), m_current_population,
+                            [](auto acc, auto op) {
+                                    return op(acc);
+                            });
+
+            std::array<Population<ChromoType>, Phase2Count> phase2_pools;
+            std::transform(std::begin(m_phase2_ops), std::end(m_phase2_ops), std::begin(phase2_pools),
+                            [&phase1_population](auto op) {
+                               return op(phase1_population);
+                            });
+
+            Population<ChromoType> phase2_population =
+                std::accumulate(std::begin(phase2_pools), std::end(phase2_pools), Population<ChromoType>{}, [](auto acc, auto cur) {
+                    return acc + cur;
+                });
+
+            Population<ChromoType> phase3_population { phase2_population };
+
+            while (std::size(phase3_population) < std::size(m_current_population)) {
+                std::array<Population<ChromoType>, Phase3Count> phase3_pools;
+                std::transform(std::begin(m_phase3_ops), std::end(m_phase3_ops), std::begin(phase3_pools),
+                               [&phase1_population](auto op) {
+                                   return op(phase1_population);
+                               });
+
+                phase3_population =
+                    std::accumulate(std::begin(phase3_pools), std::end(phase3_pools), phase3_population, [](auto acc, auto cur) {
+                        return acc + cur;
+                    });
+            }
+
+            m_current_population = phase3_population;
+
+            return *this;
+        }
+    };
+
+    template <typename InputIt, typename ChromoType = std::remove_const_t<std::remove_reference_t<decltype(*std::declval<InputIt&>())>>>
+    auto make_population(InputIt first, InputIt last) -> Population<ChromoType> {
+        Population<ChromoType> pool;
+        pool.reserve(std::distance(first, last));
+
+        std::transform(first, last, std::back_inserter(pool),
+                       [](auto chromosome) -> Organism<ChromoType> {
+                           return { chromosome };
+                       });
+
+        return pool;
+    }
+
+    template <typename ChromoType>
+    auto make_population(std::vector<ChromoType> container) -> Population<ChromoType> {
+        return make_population(std::begin(container), std::end(container));
+    }
+
+    template <typename ChromoType>
+    auto make_population(std::initializer_list<ChromoType> container) -> Population<ChromoType> {
+        return make_population(std::begin(container), std::end(container));
     }
 }
 
