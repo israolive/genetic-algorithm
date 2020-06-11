@@ -4,7 +4,10 @@
 #include <algorithm>
 #include <numeric>
 #include <functional>
+#include <iostream>
 #include <vector>
+
+#include "stochastic.hpp"
 
 namespace ai::gal {
 
@@ -20,19 +23,14 @@ namespace ai::gal {
     template <typename ChromoType>
     using Population = std::vector<Organism<ChromoType>>;
 
-    auto rng() -> std::size_t {
-        return static_cast<size_t>(std::rand());
-    }
-
     template <typename ChromoType>
     using Genetic_Operator_Function = std::function<auto (Population<ChromoType> const&) -> Population<ChromoType>>;
 
     template <typename ChromoType>
     struct Genetic_Operator {
-
         virtual auto operate(Population<ChromoType> const& pop) const -> Population<ChromoType> = 0;
 
-        virtual auto fun() -> Genetic_Operator_Function<ChromoType> {
+        virtual auto fun() const -> Genetic_Operator_Function<ChromoType> {
             return [this](Population<ChromoType> const& pop) {
                 return this->operate(pop);
             };
@@ -55,13 +53,35 @@ namespace ai::gal {
         return pool;
     }
 
+    template <typename AlleleType, typename AlleleGen>
+    auto random_chromosome(std::size_t chr_size, AlleleGen gen) -> Chromosome<AlleleType> {
+        return sto::n_unique_random<AlleleType>(chr_size, gen);
+    }
+
+    template <typename ChromoType, typename ChromoGen>
+    auto random_population(std::size_t pop_size, ChromoGen gen) -> Population<ChromoType> {
+        Population<ChromoType> pool;
+        pool.reserve(pop_size);
+
+        std::generate_n(std::back_inserter(pool), pop_size, [gen]() { return Organism<ChromoType>{ gen() }; });
+
+        return pool;
+    }
+
+    template <typename ChromoType, typename ... GenOps>
+    auto combine_genetic_operators(GenOps&& ... gen_ops) -> Genetic_Operator_Function<ChromoType> {
+        return [&](Population<ChromoType> const& pop) {
+            return (pop | ... | gen_ops);
+        };
+    }
+
     namespace {
         template <typename ChromoType>
-        inline auto random_binary_tournament(Population<ChromoType> const& population, double p, double best_chance = 0.8) -> std::size_t {
-            std::size_t fst = rng() % population.size(),
-                        snd = rng() % population.size();
+        inline auto random_binary_tournament(Population<ChromoType> const& population, double best_chance = 0.8) -> std::size_t {
+            std::size_t fst = sto::random_between(0ul, std::size(population)),
+                        snd = sto::random_between(0ul, std::size(population));
 
-            if (p < best_chance) {
+            if (sto::rng() < best_chance) {
                 if (population.at(fst).fitness > population.at(snd).fitness) { return fst; } else { return snd; }
             } else {
                 if (population.at(fst).fitness < population.at(snd).fitness) { return fst; } else { return snd; }
@@ -78,20 +98,9 @@ namespace ai::gal {
             : m_count(count), m_best_chance(best_chance) {}
 
         auto operate(Population<ChromoType> const& pop) const -> Population<ChromoType> override {
-            std::vector<std::size_t> idxes (m_count);
-
-            std::generate(std::begin(idxes), std::end(idxes),
-                          [&idxes, &pop, chance = m_best_chance, last = std::begin(idxes)] () mutable {
-                               std::size_t sel;
-
-                               do {
-                                   sel = random_binary_tournament(pop, rng(), chance);
-                               } while (std::find(std::begin(idxes), last, sel) != last);
-
-                               ++last;
-
-                               return sel;
-                           });
+            auto idxes = sto::n_unique_random<std::size_t>(m_count, [pop, chance = m_best_chance]() -> std::size_t {
+                return random_binary_tournament(pop, chance);
+            });
 
             Population<ChromoType> pool;
             pool.reserve(m_count);
@@ -143,8 +152,12 @@ namespace ai::gal {
             Population<ChromoType> pool;
             pool.reserve(pop.size());
 
+            // \todo replace this with an actual algorithm (zip tail), std::transform(begin, prev(end), next(begin), bin_op)
             for (std::size_t idx = 0; idx < pop.size() - remainder; idx += 2) {
-                auto [first, second] = m_crossover(pop.at(idx).c, pop.at(idx + 1).c);
+                auto [ first, second ] = [x = m_crossover, p = m_probability, c1 = pop.at(idx).c, c2 = pop.at(idx + 1).c]() {
+                    if (sto::rng() < p) { return x(c1, c2); }
+                    else { return std::make_pair(c1, c2); }
+                }();
 
                 pool.push_back({ first });
                 pool.push_back({ second });
@@ -174,7 +187,7 @@ namespace ai::gal {
 
             std::transform(std::begin(pop), std::end(pop), std::back_inserter(pool),
                            [mutation = m_mutation, p = m_probability](auto const& organism) {
-                               if (rng() < p) {
+                               if (sto::rng() < p) {
                                    return Organism<ChromoType> { mutation(organism.c) };
                                } else {
                                    return organism;
@@ -191,7 +204,7 @@ namespace ai::gal {
 
         Fitness_Fn m_measurement;
 
-        Fitness_Applier(Fitness_Fn measurement)
+        explicit Fitness_Applier(Fitness_Fn measurement)
             : m_measurement(measurement) {}
 
         auto operator()(Fitness_Fn measurement) -> Fitness_Applier {
@@ -215,12 +228,29 @@ namespace ai::gal {
     };
 
     template <typename ChromoType>
+    struct Combined_Operator : Genetic_Operator<ChromoType> {
+        Genetic_Operator_Function<ChromoType> m_fun;
+
+        template <typename ... GenOps>
+        explicit Combined_Operator(GenOps && ... gen_ops)
+            : m_fun(combine_genetic_operators<ChromoType>(std::forward<GenOps>(gen_ops)...)) {}
+
+        auto operate(Population<ChromoType> const& pop) const -> Population<ChromoType> override {
+            return m_fun(pop);
+        }
+
+        auto fun() const -> Genetic_Operator_Function<ChromoType> {
+            return m_fun;
+        }
+    };
+
+    template <typename ChromoType>
     auto order_crossover(ChromoType const& l, ChromoType const& r) -> std::pair<ChromoType, ChromoType> {
-        std::size_t rnd1 = rng() % std::size(l),
-                    rnd2 = rng() % std::size(l);
+        std::size_t rnd1 = sto::random_between(0ul, std::size(l)),
+                    rnd2 = sto::random_between(0ul, std::size(l));
 
         while (rnd2 == rnd1) {
-            rnd2 = rng() % std::size(l);
+            rnd2 = sto::random_between(0ul, std::size(l));
         }
 
         auto offspring = [low = std::min(rnd1, rnd2), high = std::max(rnd1, rnd2) + 1] (auto const& p1, auto const& p2) {
@@ -247,11 +277,11 @@ namespace ai::gal {
 
     template <typename ChromoType>
     auto swap_mutation(ChromoType const& chromosome) -> ChromoType {
-        std::size_t rnd1 = rng() % std::size(chromosome),
-                    rnd2 = rng() % std::size(chromosome);
+        std::size_t rnd1 = sto::random_between(0ul, std::size(chromosome)),
+                    rnd2 = sto::random_between(0ul, std::size(chromosome));
 
         while (rnd2 == rnd1) {
-            rnd2 = rng() % std::size(chromosome);
+            rnd2 = sto::random_between(0ul, std::size(chromosome));
         }
 
         auto mutated = chromosome;
@@ -313,7 +343,27 @@ namespace ai::gal {
 
             return *this;
         }
+
+        auto evolve_n(std::size_t n) -> Genetic_Context& {
+            for (auto i = 0ul; i < n; ++i) { evolve_once(); }
+
+            return *this;
+        }
+
+        template <typename Pred>
+        auto evolve_until(Pred && pred) -> std::enable_if<std::is_same_v<std::invoke_result_t<Pred>, bool>, Genetic_Context&> {
+            while (!pred(m_current_population)) { evolve_once(); };
+
+            return *this;
+        }
     };
+
+    template <typename ChromoType, typename GenOpFn, std::size_t Phase1Count, std::size_t Phase2Count, std::size_t Phase3Count>
+    Genetic_Context(Population<ChromoType> initial_pop,
+                    std::array<GenOpFn, Phase1Count> phase1_ops,
+                    std::array<GenOpFn, Phase2Count> phase2_ops,
+                    std::array<GenOpFn, Phase3Count> phase3_ops)
+                        -> Genetic_Context<ChromoType, GenOpFn, Phase1Count, Phase2Count, Phase3Count>;
 
     template <typename InputIt, typename ChromoType = std::remove_const_t<std::remove_reference_t<decltype(*std::declval<InputIt&>())>>>
     auto make_population(InputIt first, InputIt last) -> Population<ChromoType> {

@@ -1,60 +1,111 @@
-#include <QApplication>
-#include "view/MainWindow.hpp"
-
 #include <iostream>
+#include <iomanip>
+#include <algorithm>
+#include <numeric>
+#include <cmath>
 #include <array>
 #include "model/genetic_algorithm.hpp"
 
+auto earth_distance(double lat1, double long1, double lat2, double long2) -> double
+{
+    auto rad = [](double deg) { return deg * ((M_PI) / 180.0);  };
+
+    auto r_lat1 = rad(lat1);
+    auto r_long1 = rad(long1);
+    auto r_lat2 = rad(lat2);
+    auto r_long2 = rad(long2);
+
+    double delta_long = r_long2 - r_long1;
+    double delta_lat = r_lat2 - r_lat1;
+
+    double ans = pow(sin(delta_lat / 2), 2) + cos(lat1) * cos(lat2) * pow(sin(delta_long / 2), 2);
+
+    return 2 * asin(sqrt(ans)) * 6371;
+}
+
 int main(int argc, char *argv[])
 {
+    std::srand(std::time(nullptr));
+
     using namespace ai::gal;
-    using namespace std::string_literals;
 
-    //Chromosome<std::size_t> chr_a {1, 2, 3, 4, 5, 6, 7, 8, 9};
-    //Chromosome<std::size_t> chr_b {5, 7, 4, 9, 1, 3, 6, 2, 8};
-    std::string chr_a { "123456789" };
-    std::string chr_b { "987654321" };
+    using Point = std::pair<double, double>;
+    using ChrType = std::vector<std::size_t>;
 
-    auto pop = make_population({ chr_a, chr_b });
+    // Cities coordinates vector, instance from burma24.tsp
+    std::vector<Point> cities {
+            { 16.47, 96.10 },
+            { 16.47, 94.44 },
+            { 20.09, 92.54 },
+            { 22.39, 93.37 },
+            { 25.23, 97.24 },
+            { 22.00, 96.05 },
+            { 20.47, 97.02 },
+            { 17.20, 96.29 },
+            { 16.30, 97.38 },
+            { 14.05, 98.12 },
+            { 16.53, 97.38 },
+            { 21.52, 95.59 },
+            { 19.41, 97.13 },
+            { 20.09, 94.55 }
+    };
 
-    Fitness_Applier<std::string> fitness([]([[maybe_unused]] std::string const& s) -> double {
-        std::string const ideal = "541237698";
+    // Lambda to calculate accumulated distance from a path
+    auto accumulated_distance = [&cities](auto chr) {
+        auto distance_at = [&](auto i, auto j) {
+            auto [ lat1, long1 ] = cities.at(i);
+            auto [ lat2, long2 ] = cities.at(j);
+            return earth_distance(lat1, long1, lat2, long2); // or std::sqrt(std::pow(x2 - x1, 2) + std::pow(y2 - y1, 2));
+        };
 
-        double acc = 0;
+        return std::transform_reduce(std::begin(chr), std::prev(std::end(chr)),
+                std::next(std::begin(chr)), 0.0, std::plus{}, distance_at);
+    };
 
-        for (std::size_t i = 0; i < ideal.size(); i++) {
-            if (s.at(i) == ideal.at(i)) {
-                acc += 1;
-            }
-        }
-
-        return acc;
+    // Initialize random population
+    auto population = random_population<ChrType>(50, [&, len = std::size(cities)](){
+        return random_chromosome<typename ChrType::value_type>(len, [len]() {
+            return sto::random_between(0ul, len);
+        });
     });
 
-    Best_Selector<std::string> best_selector(1);
+    // Create Genetic Operators
+    Best_Selector<ChrType> best_selector (1);
+    Tournament_Selector<ChrType> selector (2, 0.8);
+    Binary_Mating<ChrType> crossover (order_crossover<ChrType>, 0.8);
+    Mutator<ChrType> mutator (swap_mutation<ChrType>, 0.05);
 
-    Tournament_Selector<std::string> selector(2, 0.8);
-    Binary_Mating<std::string> crossover(order_crossover<std::string>, 0.9);
-    Mutator<std::string> mutator(swap_mutation<std::string>, 0.1);
+    // Fitness is calculated dividing one by the accumulated distance cost from the chromosome path,
+    // so the longest path has the least fitness value.
+    Fitness_Applier<ChrType> fitness([accumulated_distance](ChrType const& chr) -> double {
+        return 1 / accumulated_distance(chr);
+    });
 
-    std::array phase1_ops { fitness.fun() };
-    std::array phase2_ops { best_selector.fun() };
-    std::array phase3_ops { static_cast<Genetic_Operator_Function<std::string>>([selector, crossover, mutator, fitness](auto const& pop) {
-        return pop | selector | crossover | mutator | fitness;
-    })};
+    // Create Genetic Evolution Context
+    // Phase 1 happens first and only once per iteration.
+    // * Selects all individuals and apply fitness function.
 
-    Genetic_Context<std::string, Genetic_Operator_Function<std::string>, 1, 1, 1> gc (pop, phase1_ops, phase2_ops, phase3_ops);
+    // Phase 2 happens second and only once per iteration, often pick some organism
+    // * Selects some individuals. In this case, it selects only the best one from previous iteration.
 
-    auto evolved = gc.evolve_once().evolve_once();
+    // Phase 3 happens until the new population reaches the size of the previous one.
+    // * Selects some individuals, maybe applies crossover, possibly mutation, and finally updates fitness.
+    Genetic_Context gc (population, std::array { fitness.fun() },
+                                    std::array { best_selector.fun() },
+                                    std::array { Combined_Operator<ChrType>(selector, crossover, mutator, fitness).fun() });
 
-    for (auto const& [ chromo, fitness ] : evolved.m_current_population) {
-        std::cout << chromo << ' ' << fitness << std::endl;
+    // Evolve population for 100 epochs, then sorts it by its fitness.
+    auto evolved_pop = gc.evolve_n(100).m_current_population;
+    std::sort(std::begin(evolved_pop), std::end(evolved_pop), [](auto const& l, auto const& r) { return l.fitness > r.fitness; });
+
+    for (auto const& [ chromo, fitness ] : evolved_pop) {
+        for (auto c : chromo) {
+            std::cout << std::setw(2) << c << ' ';
+        }
+        std::cout << ' '
+            << std::setprecision(10) << fitness << ' '
+            << std::setprecision(10)<< accumulated_distance(chromo) << std::endl;
     }
 
-    School sc("aaasa");
-
-    QApplication a(argc, argv);
-    Main_Window w;
-    w.show();
-    return a.exec();
+    return 0;
 }
