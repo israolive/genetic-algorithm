@@ -30,6 +30,7 @@ namespace ai::gal {
     struct Genetic_Operator {
         virtual auto operate(Population<ChromoType> const& pop) const -> Population<ChromoType> = 0;
 
+        // /todo maybe ub if derived class gets temp instanced then fun is called
         virtual auto fun() const -> Genetic_Operator_Function<ChromoType> {
             return [this](Population<ChromoType> const& pop) {
                 return this->operate(pop);
@@ -290,20 +291,17 @@ namespace ai::gal {
         return mutated;
     }
 
-    template <typename ChromoType, typename GenOpFn, std::size_t Phase1Count, std::size_t Phase2Count, std::size_t Phase3Count>
+    template <typename ChromoType, typename GenOpFn>
     struct Genetic_Context {
         Population<ChromoType> m_current_population;
 
-        std::array<GenOpFn, Phase1Count> m_phase1_ops;
-        std::array<GenOpFn, Phase2Count> m_phase2_ops;
-        std::array<GenOpFn, Phase3Count> m_phase3_ops;
+        std::vector<GenOpFn> m_phase1_ops;
+        std::vector<GenOpFn> m_phase2_ops;
+        std::vector<GenOpFn> m_phase3_ops;
 
-        Genetic_Context(Population<ChromoType> initial_pop,
-                        std::array<GenOpFn, Phase1Count> phase1_ops,
-                        std::array<GenOpFn, Phase2Count> phase2_ops,
-                        std::array<GenOpFn, Phase3Count> phase3_ops)
-            : m_current_population(initial_pop),
-              m_phase1_ops(phase1_ops), m_phase2_ops(phase2_ops), m_phase3_ops(phase3_ops)
+        constexpr Genetic_Context(Population<ChromoType> initial_pop, std::vector<GenOpFn> phase1_ops,
+                                    std::vector<GenOpFn> phase2_ops, std::vector<GenOpFn> phase3_ops)
+            : m_current_population(initial_pop), m_phase1_ops(phase1_ops), m_phase2_ops(phase2_ops), m_phase3_ops(phase3_ops)
         {}
 
         auto evolve_once() -> Genetic_Context& {
@@ -313,8 +311,10 @@ namespace ai::gal {
                                     return op(acc);
                             });
 
-            std::array<Population<ChromoType>, Phase2Count> phase2_pools;
-            std::transform(std::begin(m_phase2_ops), std::end(m_phase2_ops), std::begin(phase2_pools),
+            std::vector<Population<ChromoType>> phase2_pools;
+            phase2_pools.reserve(std::size(m_phase2_ops));
+
+            std::transform(std::begin(m_phase2_ops), std::end(m_phase2_ops), std::back_inserter(phase2_pools),
                             [&phase1_population](auto op) {
                                return op(phase1_population);
                             });
@@ -327,8 +327,10 @@ namespace ai::gal {
             Population<ChromoType> phase3_population { phase2_population };
 
             while (std::size(phase3_population) < std::size(m_current_population)) {
-                std::array<Population<ChromoType>, Phase3Count> phase3_pools;
-                std::transform(std::begin(m_phase3_ops), std::end(m_phase3_ops), std::begin(phase3_pools),
+                std::vector<Population<ChromoType>> phase3_pools;
+                phase3_pools.reserve(std::size(m_phase3_ops));
+
+                std::transform(std::begin(m_phase3_ops), std::end(m_phase3_ops), std::back_inserter(phase3_pools),
                                [&phase1_population](auto op) {
                                    return op(phase1_population);
                                });
@@ -358,12 +360,15 @@ namespace ai::gal {
         }
     };
 
-    template <typename ChromoType, typename GenOpFn, std::size_t Phase1Count, std::size_t Phase2Count, std::size_t Phase3Count>
-    Genetic_Context(Population<ChromoType> initial_pop,
-                    std::array<GenOpFn, Phase1Count> phase1_ops,
-                    std::array<GenOpFn, Phase2Count> phase2_ops,
-                    std::array<GenOpFn, Phase3Count> phase3_ops)
-                        -> Genetic_Context<ChromoType, GenOpFn, Phase1Count, Phase2Count, Phase3Count>;
+    template <typename ChromoType, typename GenOpFn>
+    Genetic_Context(Population<ChromoType> initial_pop, std::vector<GenOpFn> phase1_ops,
+                        std::vector<GenOpFn> phase2_ops, std::vector<GenOpFn> phase3_ops)
+                            -> Genetic_Context<ChromoType, GenOpFn>;
+
+    template <typename ChromoType, typename GenOpFn>
+    Genetic_Context(Population<ChromoType> initial_pop, std::initializer_list<GenOpFn> phase1_ops,
+                    std::initializer_list<GenOpFn> phase2_ops, std::initializer_list<GenOpFn> phase3_ops)
+    -> Genetic_Context<ChromoType, GenOpFn>;
 
     template <typename InputIt, typename ChromoType = std::remove_const_t<std::remove_reference_t<decltype(*std::declval<InputIt&>())>>>
     auto make_population(InputIt first, InputIt last) -> Population<ChromoType> {
@@ -388,9 +393,5 @@ namespace ai::gal {
         return make_population(std::begin(container), std::end(container));
     }
 }
-
-
-
-
 
 #endif // GENETICALGORITHM_HPP
