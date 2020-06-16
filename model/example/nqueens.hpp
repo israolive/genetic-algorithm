@@ -28,7 +28,7 @@
         std::for_each(std::begin(queens), std::end(queens), [&, queen_i = 0l](auto const killer) mutable {
             std::transform(std::begin(queens), std::end(queens), std::begin(alive), std::begin(alive),
                            [&, queen_j = 0l](auto const target, auto const lives) mutable {
-                               return !(lives && queen_i != queen_j &&
+                               return lives && !(queen_i != queen_j &&
                                         can_kill_occur(Point{queen_i, killer}, Point{queen_j++, target}));
                            });
             ++queen_i;
@@ -49,17 +49,17 @@
     });
 
     // Create Genetic Operators
-    Best_Selector<ChrType> best_selector (1);
-    Tournament_Selector<ChrType> selector (2, 0.8);
-    Binary_Mating<ChrType> crossover (order_crossover<ChrType>, 0.8);
-    Mutator<ChrType> mutator (swap_mutation<ChrType>, 0.02);
-    Fitness_Applier<ChrType> fitness(chr_kill_factor);
+    auto best_selector = Best_Selector<ChrType>(1);
+    auto selector = Tournament_Selector<ChrType>(2, 0.8);
+    auto crossover = Binary_Mating<ChrType>(order_crossover<ChrType>, 0.8);
+    auto mutator = Mutator<ChrType>(swap_mutation<ChrType>, 0.02);
+    auto fitness = Fitness_Applier<ChrType>(chr_kill_factor);
 
     Genetic_Context gc (population,{ fitness.fun() }, { best_selector.fun() },
                         { Combined_Operator<ChrType>(selector, crossover, mutator, fitness).fun() });
 
     // Evolve population for 100 epochs, then sort it by its fitness.
-    auto evolved_pop = gc.evolve_n(100).m_current_population;
+    auto evolved_pop = gc.evolve_n(1000).m_current_population;
     std::sort(std::begin(evolved_pop), std::end(evolved_pop), [](auto const& l, auto const& r) { return l.fitness > r.fitness; });
 
     for (auto const& [ chromo, fitness ] : evolved_pop) {
